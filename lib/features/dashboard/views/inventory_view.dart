@@ -1,753 +1,661 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:provider/provider.dart';
+import 'package:roxellpharma/core/costants/api_constants.dart';
 import 'package:roxellpharma/core/costants/app_colors.dart';
+import 'package:roxellpharma/core/utils/storage_util.dart';
+import 'package:roxellpharma/core/widgets/loading_button.dart';
+import 'package:roxellpharma/features/auth/domain/models/user_model.dart';
+import 'package:roxellpharma/features/auth/presentation/providers/auth_provider.dart';
+
+class InventoryItem {
+  final int id;
+  final int productoId;
+  final String nombreProducto;
+  final String composicionProducto;
+  final int sucursalId;
+  final String nombreSucursal;
+  final int stock;
+  final int stockMinimo;
+  final int stockMaximo;
+  final double precioContado;
+  final double precioCredito;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final List<MovimientoInventario> movimientos;
+
+  InventoryItem({
+    required this.id,
+    required this.productoId,
+    required this.nombreProducto,
+    required this.composicionProducto,
+    required this.sucursalId,
+    required this.nombreSucursal,
+    required this.stock,
+    required this.stockMinimo,
+    required this.stockMaximo,
+    required this.precioContado,
+    required this.precioCredito,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.movimientos,
+  });
+
+  factory InventoryItem.fromJson(Map<String, dynamic> json) {
+    return InventoryItem(
+      id: json['id'],
+      productoId: json['producto_id'],
+      nombreProducto: json['nombre_producto'],
+      composicionProducto: json['composicion_producto'] ?? '',
+      sucursalId: json['sucursal_id'],
+      nombreSucursal: json['nombre_sucursal'],
+      stock: json['stock'],
+      stockMinimo: json['stock_minimo'],
+      stockMaximo: json['stock_maximo'],
+      precioContado: json['precio_contado'].toDouble(),
+      precioCredito: json['precio_credito'].toDouble(),
+      createdAt: DateTime.parse(json['created_at']),
+      updatedAt: DateTime.parse(json['updated_at']),
+      movimientos: (json['movimientos'] as List? ?? [])
+          .map((e) => MovimientoInventario.fromJson(e))
+          .toList(),
+    );
+  }
+}
+
+class MovimientoInventario {
+  final int id;
+  final String tipo;
+  final int productoId;
+  final int? sucursalOrigenId;
+  final int? sucursalDestinoId;
+  final int cantidad;
+  final int adminId;
+  final String? notas;
+  final DateTime fecha;
+  final String tipoFormateado;
+  final String descripcion;
+  final String? adminNombre;
+  final String? sucursalOrigenNombre;
+  final String? sucursalDestinoNombre;
+
+  MovimientoInventario({
+    required this.id,
+    required this.tipo,
+    required this.productoId,
+    this.sucursalOrigenId,
+    this.sucursalDestinoId,
+    required this.cantidad,
+    required this.adminId,
+    this.notas,
+    required this.fecha,
+    required this.tipoFormateado,
+    required this.descripcion,
+    this.adminNombre,
+    this.sucursalOrigenNombre,
+    this.sucursalDestinoNombre,
+  });
+
+  factory MovimientoInventario.fromJson(Map<String, dynamic> json) {
+    return MovimientoInventario(
+      id: json['id'],
+      tipo: json['tipo'],
+      productoId: json['producto_id'],
+      sucursalOrigenId: json['sucursal_origen_id'],
+      sucursalDestinoId: json['sucursal_destino_id'],
+      cantidad: json['cantidad'],
+      adminId: json['admin_id'],
+      notas: json['notas'],
+      fecha: DateTime.parse(json['fecha']),
+      tipoFormateado: json['tipo_formateado'],
+      descripcion: json['descripcion'],
+      adminNombre: json['admin']?['nombre'],
+      sucursalOrigenNombre: json['sucursal_origen']?['nombre'],
+      sucursalDestinoNombre: json['sucursal_destino']?['nombre'],
+    );
+  }
+}
+
+class Sucursal {
+  final int id;
+  final String nombre;
+
+  Sucursal({required this.id, required this.nombre});
+
+  factory Sucursal.fromJson(Map<String, dynamic> json) {
+    return Sucursal(id: json['id'], nombre: json['nombre']);
+  }
+}
+
+class ProductoDisponible {
+  final int id;
+  final String nombre;
+  final String composicion;
+  final String presentacion;
+  final String? categoria;
+
+  ProductoDisponible({
+    required this.id,
+    required this.nombre,
+    required this.composicion,
+    required this.presentacion,
+    this.categoria,
+  });
+
+  factory ProductoDisponible.fromJson(Map<String, dynamic> json) {
+    return ProductoDisponible(
+      id: json['id'],
+      nombre: json['nombre'],
+      composicion: json['composicion'],
+      presentacion: json['presentacion'],
+      categoria: json['categoria'],
+    );
+  }
+}
+
+class InventoryProvider with ChangeNotifier {
+  final StorageUtil _storage;
+  final http.Client _client;
+
+  List<InventoryItem> _inventoryItems = [];
+  List<Sucursal> _sucursales = [];
+  List<ProductoDisponible> _productosDisponibles = [];
+  List<Sucursal> _sucursalesDisponibles = [];
+  bool _isLoading = false;
+  String? _error;
+  String _searchQuery = '';
+  String _selectedStockStatus = 'todos';
+  String _selectedSucursal = 'todas';
+  String _sortField = 'producto.nombre';
+  String _sortDirection = 'asc';
+  int _currentPage = 1;
+  int _totalItems = 0;
+  int _itemsPerPage = 10;
+
+  String get selectedStockStatus => _selectedStockStatus;
+  String get selectedSucursal => _selectedSucursal;
+  String get sortField => _sortField;
+  String get sortDirection => _sortDirection;
+  String get searchQuery => _searchQuery;
+
+  InventoryProvider(this._storage, [http.Client? client])
+    : _client = client ?? http.Client();
+
+  List<InventoryItem> get inventoryItems => _inventoryItems;
+  List<Sucursal> get sucursales => _sucursales;
+  List<ProductoDisponible> get productosDisponibles => _productosDisponibles;
+  List<Sucursal> get sucursalesDisponibles => _sucursalesDisponibles;
+  bool get isLoading => _isLoading;
+  String? get error => _error;
+  int get totalItems => _totalItems;
+  int get currentPage => _currentPage;
+  int get itemsPerPage => _itemsPerPage;
+
+  Future<void> loadInventory() async {
+    try {
+      _isLoading = true;
+      notifyListeners();
+
+      final token = await _storage.getToken();
+      final user = await _storage.getUser();
+
+      if (token == null || user == null) {
+        throw Exception('No autenticado - Por favor inicie sesión nuevamente');
+      }
+
+      final url = Uri.parse(
+        '${ApiConstants.baseUrl}/v1/inventario?'
+        'page=$_currentPage'
+        '&per_page=$_itemsPerPage'
+        '&search=$_searchQuery'
+        '&estado_stock=$_selectedStockStatus'
+        '&sucursal_id=${_selectedSucursal == 'todas' ? '' : _selectedSucursal}'
+        '&sort_field=$_sortField'
+        '&sort_direction=$_sortDirection',
+      );
+
+      final response = await _client.get(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+
+        _inventoryItems = (responseData['data'] as List)
+            .map((item) => InventoryItem.fromJson(item))
+            .toList();
+
+        _totalItems = responseData['total'];
+        _currentPage = responseData['current_page'];
+        _itemsPerPage = responseData['per_page'];
+
+        _sucursales = (responseData['sucursales'] as List)
+            .map((item) => Sucursal.fromJson(item))
+            .toList();
+
+        _error = null;
+      } else if (response.statusCode == 401) {
+        // Token inválido o expirado
+        throw Exception('Sesión expirada - Por favor inicie sesión nuevamente');
+      } else {
+        final errorData = json.decode(response.body);
+        throw Exception(
+          errorData['message'] ?? 'Error al cargar el inventario',
+        );
+      }
+    } catch (e) {
+      _error = e.toString();
+      rethrow;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> loadProductosDisponibles(
+    String search, {
+    int? sucursalId,
+  }) async {
+    try {
+      _isLoading = true;
+      notifyListeners();
+
+      final token = await _storage.getToken();
+      if (token == null) throw Exception('No autenticado');
+
+      final url = Uri.parse(
+        '${ApiConstants.baseUrl}/v1/inventario/productos-disponibles?'
+        'search=$search'
+        '${sucursalId != null ? '&sucursal_id=$sucursalId' : ''}',
+      );
+
+      final response = await _client.get(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        if (responseData['success'] == true) {
+          _productosDisponibles = (responseData['data']['productos'] as List)
+              .map((item) => ProductoDisponible.fromJson(item))
+              .toList();
+        } else {
+          throw Exception(
+            responseData['message'] ?? 'Error al cargar productos disponibles',
+          );
+        }
+      } else {
+        throw Exception(
+          'Error al cargar productos disponibles: ${response.statusCode}',
+        );
+      }
+    } catch (e) {
+      _error = e.toString();
+      rethrow;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> loadSucursalesDisponibles(int productoId) async {
+    try {
+      _isLoading = true;
+      notifyListeners();
+
+      final token = await _storage.getToken();
+      if (token == null) throw Exception('No autenticado');
+
+      final url = Uri.parse(
+        '${ApiConstants.baseUrl}/v1/inventario/sucursales-disponibles/$productoId',
+      );
+
+      final response = await _client.get(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+
+        // Verificar si la respuesta tiene estructura {success: true, data: [...]}
+        if (responseData is Map && responseData.containsKey('data')) {
+          _sucursalesDisponibles = (responseData['data'] as List)
+              .map((item) => Sucursal.fromJson(item))
+              .toList();
+        }
+        // O si es directamente una lista (por compatibilidad)
+        else if (responseData is List) {
+          _sucursalesDisponibles = (responseData as List)
+              .map((item) => Sucursal.fromJson(item))
+              .toList();
+        } else {
+          throw Exception('Formato de respuesta no válido');
+        }
+      } else {
+        throw Exception(
+          'Error al cargar sucursales disponibles: ${response.statusCode}',
+        );
+      }
+    } catch (e) {
+      _error = e.toString();
+      rethrow;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> createInventoryItem(Map<String, dynamic> data) async {
+    try {
+      _isLoading = true;
+      notifyListeners();
+
+      final token = await _storage.getToken();
+      if (token == null) throw Exception('No autenticado');
+
+      final url = Uri.parse('${ApiConstants.baseUrl}/v1/inventario');
+
+      final response = await _client.post(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: json.encode(data),
+      );
+
+      final responseData = json.decode(response.body);
+
+      if (response.statusCode == 201) {
+        await loadInventory();
+        _error = null;
+      } else {
+        throw Exception(
+          responseData['message'] ??
+              'Error al crear inventario: ${response.statusCode}',
+        );
+      }
+    } catch (e) {
+      _error = e.toString();
+      rethrow; // Esto permite que el diálogo muestre el error específico
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> updateInventoryItem(int id, Map<String, dynamic> data) async {
+    try {
+      _isLoading = true;
+      notifyListeners();
+
+      final token = await _storage.getToken();
+      if (token == null) throw Exception('No autenticado');
+
+      final url = Uri.parse('${ApiConstants.baseUrl}/v1/inventario/$id');
+
+      final response = await _client.put(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: json.encode(data),
+      );
+
+      if (response.statusCode != 200) {
+        throw Exception(
+          'Error al actualizar inventario: ${response.statusCode}',
+        );
+      }
+
+      await loadInventory();
+    } catch (e) {
+      _error = e.toString();
+      rethrow;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> transferInventory(Map<String, dynamic> data) async {
+    try {
+      _isLoading = true;
+      notifyListeners();
+
+      final token = await _storage.getToken();
+      if (token == null) throw Exception('No autenticado');
+
+      final url = Uri.parse('${ApiConstants.baseUrl}/v1/inventario/transferir');
+
+      final response = await _client.post(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: json.encode(data),
+      );
+
+      if (response.statusCode != 200) {
+        throw Exception(
+          'Error al transferir inventario: ${response.statusCode}',
+        );
+      }
+
+      await loadInventory();
+    } catch (e) {
+      _error = e.toString();
+      rethrow;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> deleteInventoryItem(int id) async {
+    try {
+      _isLoading = true;
+      notifyListeners();
+
+      final token = await _storage.getToken();
+      if (token == null) throw Exception('No autenticado');
+
+      final url = Uri.parse('${ApiConstants.baseUrl}/v1/inventario/$id');
+
+      final response = await _client.delete(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+        },
+      );
+
+      if (response.statusCode != 200) {
+        throw Exception('Error al eliminar inventario: ${response.statusCode}');
+      }
+
+      await loadInventory();
+    } catch (e) {
+      _error = e.toString();
+      rethrow;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> loadMovimientos(int productoId) async {
+    try {
+      final token = await _storage.getToken();
+      if (token == null) throw Exception('No autenticado');
+
+      final url = Uri.parse(
+        '${ApiConstants.baseUrl}/v1/inventario/movimientos/$productoId',
+      );
+
+      final response = await _client.get(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final index = _inventoryItems.indexWhere(
+          (item) => item.productoId == productoId,
+        );
+        if (index != -1) {
+          _inventoryItems[index] = _inventoryItems[index].copyWith(
+            movimientos: (data['movimientos'] as List)
+                .map((e) => MovimientoInventario.fromJson(e))
+                .toList(),
+          );
+          notifyListeners();
+        }
+      }
+    } catch (e) {
+      print('Error al cargar movimientos: $e');
+    }
+  }
+
+  void setSearchQuery(String query) {
+    _searchQuery = query;
+    _currentPage = 1;
+    notifyListeners();
+  }
+
+  void setStockStatus(String status) {
+    _selectedStockStatus = status;
+    _currentPage = 1;
+    notifyListeners();
+  }
+
+  void setSucursal(String sucursal) {
+    _selectedSucursal = sucursal;
+    _currentPage = 1;
+    notifyListeners();
+  }
+
+  void setSort(String field, String direction) {
+    _sortField = field;
+    _sortDirection = direction;
+    _currentPage = 1;
+    notifyListeners();
+  }
+
+  void setPage(int page) {
+    _currentPage = page;
+    notifyListeners();
+  }
+
+  void clearProductosDisponibles() {
+    _productosDisponibles = [];
+    notifyListeners();
+  }
+
+  void clearSucursalesDisponibles() {
+    _sucursalesDisponibles = [];
+    notifyListeners();
+  }
+}
+
+extension InventoryItemExtension on InventoryItem {
+  InventoryItem copyWith({List<MovimientoInventario>? movimientos}) {
+    return InventoryItem(
+      id: id,
+      productoId: productoId,
+      nombreProducto: nombreProducto,
+      composicionProducto: composicionProducto,
+      sucursalId: sucursalId,
+      nombreSucursal: nombreSucursal,
+      stock: stock,
+      stockMinimo: stockMinimo,
+      stockMaximo: stockMaximo,
+      precioContado: precioContado,
+      precioCredito: precioCredito,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+      movimientos: movimientos ?? this.movimientos,
+    );
+  }
+}
 
 class InventoryView extends StatefulWidget {
-  const InventoryView({super.key});
+  const InventoryView({Key? key}) : super(key: key);
 
   @override
-  State<InventoryView> createState() => _InventoryViewState();
+  _InventoryViewState createState() => _InventoryViewState();
 }
 
 class _InventoryViewState extends State<InventoryView> {
-  final TextEditingController _searchController = TextEditingController();
-  String _selectedStockStatus = 'all';
-  String _selectedBranch = 'all';
+  final _searchController = TextEditingController();
+  final _scrollController = ScrollController();
   bool _showAdvancedFilters = false;
-  //bool _isLoading = false;
-
-  // Mock data - replace with your API calls
-  final List<Map<String, dynamic>> _inventoryItems = [
-    {
-      "id": 1,
-      "productId": 101,
-      "productName": "AMBROXOL",
-      "composition": "Ambroxol Clorhidrato 30 mg",
-      "branchId": 1,
-      "branchName": "La Paz",
-      "stock": 15,
-      "minStock": 20,
-      "maxStock": 100,
-      "cashPrice": 22.50,
-      "creditPrice": 25.00,
-      "movements": [
-        {
-          "date": "27/7/2025, 12:28:29 p.m.",
-          "type": "Transferencia",
-          "description":
-              "Transferencia de 20 unidades desde La Paz hacia Cochabamba",
-          "quantity": -20,
-          "responsible": "Sistema",
-          "notes": "Integran",
-        },
-        {
-          "date": "27/7/2025, 12:28:29 p.m.",
-          "type": "Transferencia",
-          "description":
-              "Transferencia de 20 unidades desde Cochabamba hacia La Paz",
-          "quantity": 20,
-          "responsible": "Sistema",
-          "notes": "Integran",
-        },
-      ],
-    },
-    {
-      "id": 2,
-      "productId": 102,
-      "productName": "AMOXICILINA",
-      "composition": "Amoxicilina 250 mg",
-      "branchId": 1,
-      "branchName": "La Paz",
-      "stock": 275,
-      "minStock": 50,
-      "maxStock": 300,
-      "cashPrice": 15.00,
-      "creditPrice": 18.00,
-      "movements": [],
-    },
-    {
-      "id": 3,
-      "productId": 103,
-      "productName": "AZITROXELL",
-      "composition": "Azitromicina 500 mg",
-      "branchId": 2,
-      "branchName": "Cochabamba",
-      "stock": 45,
-      "minStock": 30,
-      "maxStock": 150,
-      "cashPrice": 85.00,
-      "creditPrice": 90.00,
-      "movements": [
-        {
-          "date": "28/7/2025, 10:15:22 a.m.",
-          "type": "Compra",
-          "description": "Compra de 50 unidades a proveedor PharmaCorp",
-          "quantity": 50,
-          "responsible": "Juan Pérez",
-          "notes": "Factura #PH-2025-789",
-        },
-      ],
-    },
-    {
-      "id": 4,
-      "productId": 104,
-      "productName": "GASTROXELL",
-      "composition": "Omeprazol 20 mg",
-      "branchId": 1,
-      "branchName": "La Paz",
-      "stock": 320,
-      "minStock": 100,
-      "maxStock": 500,
-      "cashPrice": 1.80,
-      "creditPrice": 2.00,
-      "movements": [],
-    },
-    {
-      "id": 5,
-      "productId": 105,
-      "productName": "DOLO-XELL",
-      "composition": "Salicilato de Metilo-Alcanfor-Mentol",
-      "branchId": 3,
-      "branchName": "Santa Cruz",
-      "stock": 18,
-      "minStock": 15,
-      "maxStock": 50,
-      "cashPrice": 12.50,
-      "creditPrice": 15.00,
-      "movements": [
-        {
-          "date": "29/7/2025, 03:45:10 p.m.",
-          "type": "Venta",
-          "description": "Venta a cliente particular",
-          "quantity": -2,
-          "responsible": "María Gómez",
-          "notes": "Recibo #SC-00254",
-        },
-      ],
-    },
-    {
-      "id": 6,
-      "productId": 106,
-      "productName": "NITROFURAZONA",
-      "composition": "Nitrofurazona 0.2 g",
-      "branchId": 2,
-      "branchName": "Cochabamba",
-      "stock": 22,
-      "minStock": 10,
-      "maxStock": 40,
-      "cashPrice": 18.00,
-      "creditPrice": 20.00,
-      "movements": [],
-    },
-    {
-      "id": 7,
-      "productId": 107,
-      "productName": "PROFEROX 200",
-      "composition": "Ketoprofeno 200 mg",
-      "branchId": 1,
-      "branchName": "La Paz",
-      "stock": 150,
-      "minStock": 50,
-      "maxStock": 300,
-      "cashPrice": 0.80,
-      "creditPrice": 1.00,
-      "movements": [
-        {
-          "date": "30/7/2025, 09:30:45 a.m.",
-          "type": "Ajuste",
-          "description": "Ajuste de inventario por conteo físico",
-          "quantity": 5,
-          "responsible": "Sistema",
-          "notes": "Diferencia detectada en inventario",
-        },
-      ],
-    },
-    {
-      "id": 8,
-      "productId": 108,
-      "productName": "TRIMESOL FORTE",
-      "composition": "Cotrimoxazol 800mg + 160mg",
-      "branchId": 3,
-      "branchName": "Santa Cruz",
-      "stock": 420,
-      "minStock": 200,
-      "maxStock": 600,
-      "cashPrice": 0.50,
-      "creditPrice": 0.60,
-      "movements": [],
-    },
-    {
-      "id": 9,
-      "productId": 109,
-      "productName": "KETEROX",
-      "composition": "Ketorolaco 20 mg",
-      "branchId": 2,
-      "branchName": "Cochabamba",
-      "stock": 180,
-      "minStock": 100,
-      "maxStock": 300,
-      "cashPrice": 0.75,
-      "creditPrice": 0.90,
-      "movements": [
-        {
-          "date": "31/7/2025, 11:20:33 a.m.",
-          "type": "Transferencia",
-          "description":
-              "Transferencia de 30 unidades desde Cochabamba hacia La Paz",
-          "quantity": -30,
-          "responsible": "Sistema",
-          "notes": "Orden #TR-2025-456",
-        },
-      ],
-    },
-    {
-      "id": 10,
-      "productId": 110,
-      "productName": "POVIDONA YODADA",
-      "composition": "Povidona Yodada 10%",
-      "branchId": 1,
-      "branchName": "La Paz",
-      "stock": 25,
-      "minStock": 20,
-      "maxStock": 60,
-      "cashPrice": 25.00,
-      "creditPrice": 28.00,
-      "movements": [],
-    },
-    {
-      "id": 11,
-      "productId": 111,
-      "productName": "LORALGEX",
-      "composition": "Desloratadina 2.5mg/5ml",
-      "branchId": 3,
-      "branchName": "Santa Cruz",
-      "stock": 35,
-      "minStock": 20,
-      "maxStock": 80,
-      "cashPrice": 45.00,
-      "creditPrice": 50.00,
-      "movements": [
-        {
-          "date": "1/8/2025, 04:15:55 p.m.",
-          "type": "Venta",
-          "description": "Venta a farmacia asociada",
-          "quantity": -10,
-          "responsible": "Carlos Rojas",
-          "notes": "Factura #FA-2025-789",
-        },
-      ],
-    },
-    {
-      "id": 12,
-      "productId": 112,
-      "productName": "NORMOGLIN",
-      "composition": "Metformina 850 mg",
-      "branchId": 2,
-      "branchName": "Cochabamba",
-      "stock": 200,
-      "minStock": 40,
-      "maxStock": 120,
-      "cashPrice": 1.20,
-      "creditPrice": 1.50,
-      "movements": [],
-    },
-  ];
-
-  final List<Map<String, String>> _stockStatusOptions = [
-    {'value': 'all', 'label': 'Todos'},
-    {'value': 'critical', 'label': 'Crítico'},
-    {'value': 'low', 'label': 'Bajo'},
-    {'value': 'normal', 'label': 'Normal'},
-    {'value': 'high', 'label': 'Alto'},
-  ];
-
-  final List<Map<String, dynamic>> _branches = [
-    {'id': 1, 'name': 'La Paz'},
-    {'id': 2, 'name': 'Cochabamba'},
-    {'id': 3, 'name': 'Santa Cruz'},
-    {'id': 4, 'name': 'Oruro'},
-  ];
+  final Map<String, bool> _expandedItems = {};
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      // appBar: AppBar(
-      //   title: const Text('Gestión de Inventario'),
-      //   backgroundColor: AppColors.orange600,
-      // ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Statistics Cards
-            // _buildStatisticsCards(),
-            const SizedBox(height: 20),
-
-            // Search and Filters
-            _buildSearchAndFilters(),
-            const SizedBox(height: 16),
-
-            // Advanced Filters
-            if (_showAdvancedFilters) _buildAdvancedFilters(),
-
-            // Inventory List
-            _buildInventoryList(),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _showAddInventoryDialog,
-        backgroundColor: AppColors.orange600,
-        child: const Icon(Icons.add, color: Colors.white),
-      ),
-    );
+  void initState() {
+    super.initState();
+    _scrollController.addListener(_scrollListener);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final provider = Provider.of<InventoryProvider>(context, listen: false);
+      provider.loadInventory();
+    });
   }
 
-  // Widget _buildStatisticsCards() {
-  //   final criticalCount = _inventoryItems
-  //       .where((item) => _getStockStatus(item) == 'critical')
-  //       .length;
-  //   final lowCount = _inventoryItems
-  //       .where((item) => _getStockStatus(item) == 'low')
-  //       .length;
-
-  //   return SingleChildScrollView(
-  //     scrollDirection: Axis.horizontal,
-  //     child: Row(
-  //       children: [
-  //         StatCard(
-  //           title: 'Total Productos',
-  //           value: _inventoryItems.length.toString(),
-  //           icon: Icons.inventory_2_rounded,
-  //           color: AppColors.blue500,
-  //         ),
-  //         const SizedBox(width: 12),
-  //         StatCard(
-  //           title: 'Stock Crítico',
-  //           value: criticalCount.toString(),
-  //           icon: Icons.warning_rounded,
-  //           color: AppColors.red600,
-  //         ),
-  //         const SizedBox(width: 12),
-  //         StatCard(
-  //           title: 'Stock Bajo',
-  //           value: lowCount.toString(),
-  //           icon: Icons.trending_down_rounded,
-  //           color: AppColors.yellow600,
-  //         ),
-  //         const SizedBox(width: 12),
-  //         StatCard(
-  //           title: 'Sucursales',
-  //           value: _branches.length.toString(),
-  //           icon: Icons.store_rounded,
-  //           color: AppColors.green600,
-  //         ),
-  //       ],
-  //     ),
-  //   );
-  // }
-
-  Widget _buildSearchAndFilters() {
-    return Row(
-      children: [
-        Expanded(
-          child: TextField(
-            controller: _searchController,
-            decoration: InputDecoration(
-              hintText: 'Buscar productos...',
-              prefixIcon: const Icon(Icons.search),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-            onChanged: (value) {
-              // Implement search functionality
-              setState(() {});
-            },
-          ),
-        ),
-        const SizedBox(width: 12),
-        IconButton(
-          onPressed: () {
-            setState(() {
-              _showAdvancedFilters = !_showAdvancedFilters;
-            });
-          },
-          icon: const Icon(Icons.filter_alt_rounded),
-          style: IconButton.styleFrom(
-            backgroundColor: AppColors.gray200,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-          ),
-        ),
-      ],
-    );
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _scrollController.dispose();
+    super.dispose();
   }
 
-  Widget _buildAdvancedFilters() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      margin: const EdgeInsets.only(bottom: 16),
-      decoration: BoxDecoration(
-        color: AppColors.gray100,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        children: [
-          // Stock Status Filter
-          DropdownButtonFormField<String>(
-            value: _selectedStockStatus,
-            decoration: InputDecoration(
-              labelText: 'Estado de Stock',
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-            items: _stockStatusOptions.map((status) {
-              return DropdownMenuItem<String>(
-                value: status['value'],
-                child: Text(status['label']!),
-              );
-            }).toList(),
-            onChanged: (value) {
-              setState(() {
-                _selectedStockStatus = value!;
-              });
-            },
-          ),
-          const SizedBox(height: 16),
-
-          // Branch Filter
-          DropdownButtonFormField<String>(
-            value: _selectedBranch,
-            decoration: InputDecoration(
-              labelText: 'Sucursal',
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-            ),
-            items: [
-              const DropdownMenuItem<String>(
-                value: 'all',
-                child: Text('Todas las sucursales'),
-              ),
-              ..._branches.map((branch) {
-                return DropdownMenuItem<String>(
-                  value: branch['id'].toString(),
-                  child: Text(branch['name']),
-                );
-              }).toList(),
-            ],
-            onChanged: (value) {
-              setState(() {
-                _selectedBranch = value!;
-              });
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildInventoryList() {
-    final filteredItems = _inventoryItems.where((item) {
-      // Apply filters
-      final matchesSearch = item['productName']
-          .toString()
-          .toLowerCase()
-          .contains(_searchController.text.toLowerCase());
-
-      final matchesStockStatus =
-          _selectedStockStatus == 'all' ||
-          _getStockStatus(item) == _selectedStockStatus;
-
-      final matchesBranch =
-          _selectedBranch == 'all' ||
-          item['branchId'].toString() == _selectedBranch;
-
-      return matchesSearch && matchesStockStatus && matchesBranch;
-    }).toList();
-
-    if (filteredItems.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32.0),
-          child: Text(
-            'No se encontraron productos que coincidan con los criterios de búsqueda',
-            style: TextStyle(color: AppColors.gray500, fontSize: 16),
-            textAlign: TextAlign.center,
-          ),
-        ),
-      );
+  void _scrollListener() {
+    if (_scrollController.position.pixels ==
+        _scrollController.position.maxScrollExtent) {
+      final provider = Provider.of<InventoryProvider>(context, listen: false);
+      if (provider.currentPage * provider.itemsPerPage < provider.totalItems) {
+        provider.setPage(provider.currentPage + 1);
+        provider.loadInventory();
+      }
     }
-
-    return ListView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: filteredItems.length,
-      itemBuilder: (context, index) {
-        final item = filteredItems[index];
-        final stockStatus = _getStockStatus(item);
-
-        return Card(
-          margin: const EdgeInsets.only(bottom: 16),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Product Header
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            item['productName'],
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          Text(
-                            item['composition'],
-                            style: TextStyle(
-                              color: AppColors.gray500,
-                              fontSize: 14,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              Icon(
-                                Icons.location_on,
-                                size: 16,
-                                color: AppColors.gray400,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                item['branchName'],
-                                style: TextStyle(
-                                  color: AppColors.gray500,
-                                  fontSize: 14,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // Stock Info
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          item['stock'].toString(),
-                          style: const TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const Text(
-                          'Stock Actual',
-                          style: TextStyle(fontSize: 12),
-                        ),
-                      ],
-                    ),
-
-                    // Status Chip
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: _getStockStatusColor(
-                          stockStatus,
-                        ).withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            _getStockStatusIcon(stockStatus),
-                            size: 16,
-                            color: _getStockStatusColor(stockStatus),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            _getStockStatusText(stockStatus),
-                            style: TextStyle(
-                              color: _getStockStatusColor(stockStatus),
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 16),
-
-                // Action Buttons
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    IconButton(
-                      onPressed: () => _showEditInventoryDialog(item),
-                      icon: const Icon(Icons.edit),
-                      color: AppColors.blue600,
-                    ),
-                    IconButton(
-                      onPressed: () => _showTransferDialog(item),
-                      icon: const Icon(Icons.swap_horiz),
-                      color: AppColors.purple600,
-                    ),
-                    IconButton(
-                      onPressed: () => _showDeleteConfirmation(item),
-                      icon: const Icon(Icons.delete),
-                      color: AppColors.red600,
-                    ),
-                  ],
-                ),
-
-                // Details Section
-                ExpansionTile(
-                  title: const Text('Ver detalles'),
-                  children: [
-                    // Stock Info Grid
-                    GridView.count(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      crossAxisCount: 2,
-                      childAspectRatio: 2,
-                      children: [
-                        _buildDetailItem(
-                          'Stock Mínimo',
-                          item['minStock'].toString(),
-                        ),
-                        _buildDetailItem(
-                          'Stock Máximo',
-                          item['maxStock'].toString(),
-                        ),
-                        _buildDetailItem(
-                          'Precio Contado',
-                          'Bs. ${item['cashPrice'].toStringAsFixed(2)}',
-                        ),
-                        _buildDetailItem(
-                          'Precio Crédito',
-                          'Bs. ${item['creditPrice'].toStringAsFixed(2)}',
-                        ),
-                        _buildDetailItem(
-                          '% Disponible',
-                          '${((item['stock'] / item['maxStock']) * 100).toStringAsFixed(0)}%',
-                          showProgress: true,
-                          progressValue: item['stock'] / item['maxStock'],
-                        ),
-                      ],
-                    ),
-
-                    // Movement History
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8.0),
-                      child: Text(
-                        'Historial de Movimientos',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                        ),
-                      ),
-                    ),
-
-                    if (item['movements'].isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 16.0),
-                        child: Text(
-                          'No hay movimientos registrados para este producto',
-                        ),
-                      )
-                    else
-                      ...item['movements'].map<Widget>((movement) {
-                        return ListTile(
-                          title: Text(movement['description']),
-                          subtitle: Text(
-                            '${movement['date']} - ${movement['responsible']}',
-                          ),
-                          trailing: Text(
-                            '${movement['quantity']} unidades',
-                            style: TextStyle(
-                              color: movement['type'] == 'Transferencia'
-                                  ? AppColors.blue600
-                                  : AppColors.red600,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
   }
 
-  Widget _buildDetailItem(
-    String title,
-    String value, {
-    bool showProgress = false,
-    double? progressValue,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.all(8.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: TextStyle(color: AppColors.gray500, fontSize: 14)),
-          Text(
-            value,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-          if (showProgress && progressValue != null)
-            LinearProgressIndicator(
-              value: progressValue,
-              backgroundColor: AppColors.gray200,
-              color: progressValue < 0.2
-                  ? AppColors.red600
-                  : progressValue < 0.5
-                  ? AppColors.yellow600
-                  : AppColors.green600,
-            ),
-        ],
-      ),
-    );
-  }
-
-  String _getStockStatus(Map<String, dynamic> item) {
-    if (item['stock'] <= item['minStock']) return 'critical';
-    if (item['stock'] <= item['minStock'] * 1.5) return 'low';
-    if (item['stock'] >= item['maxStock'] * 0.8) return 'high';
+  String _getStockStatus(InventoryItem item) {
+    if (item.stock <= item.stockMinimo) return 'critico';
+    if (item.stock <= item.stockMinimo * 1.5) return 'bajo';
+    if (item.stock >= item.stockMaximo * 0.8) return 'alto';
     return 'normal';
   }
 
   Color _getStockStatusColor(String status) {
     switch (status) {
-      case 'critical':
+      case 'critico':
         return AppColors.red600;
-      case 'low':
+      case 'bajo':
         return AppColors.yellow600;
-      case 'high':
+      case 'alto':
         return AppColors.blue600;
       case 'normal':
       default:
@@ -757,11 +665,11 @@ class _InventoryViewState extends State<InventoryView> {
 
   IconData _getStockStatusIcon(String status) {
     switch (status) {
-      case 'critical':
+      case 'critico':
         return Icons.warning;
-      case 'low':
+      case 'bajo':
         return Icons.trending_down;
-      case 'high':
+      case 'alto':
         return Icons.trending_up;
       case 'normal':
       default:
@@ -771,11 +679,11 @@ class _InventoryViewState extends State<InventoryView> {
 
   String _getStockStatusText(String status) {
     switch (status) {
-      case 'critical':
+      case 'critico':
         return 'Crítico';
-      case 'low':
+      case 'bajo':
         return 'Bajo';
-      case 'high':
+      case 'alto':
         return 'Alto';
       case 'normal':
       default:
@@ -784,269 +692,580 @@ class _InventoryViewState extends State<InventoryView> {
   }
 
   void _showAddInventoryDialog() {
-    final _formKey = GlobalKey<FormState>();
-    final TextEditingController _productController = TextEditingController();
-    final TextEditingController _stockController = TextEditingController();
-    final TextEditingController _minStockController = TextEditingController();
-    final TextEditingController _maxStockController = TextEditingController();
-    final TextEditingController _cashPriceController = TextEditingController();
-    final TextEditingController _creditPriceController =
-        TextEditingController();
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
+    final user = Provider.of<AuthProvider>(context, listen: false).user!;
 
-    String? _selectedBranch;
-    //String? _selectedProduct;
+    final _formKey = GlobalKey<FormState>();
+    final _productSearchController = TextEditingController();
+    final _stockController = TextEditingController(text: '0');
+    final _minStockController = TextEditingController(text: '0');
+    final _maxStockController = TextEditingController(text: '0');
+    final _cashPriceController = TextEditingController(text: '0.00');
+    final _creditPriceController = TextEditingController(text: '0.00');
+
+    ProductoDisponible? _selectedProduct;
+    Sucursal? _selectedSucursal;
+    bool _isLoadingProducts = false;
+    bool _isLoadingSucursales = false;
+    int _currentStep = 1;
+    String? _errorMessage;
 
     showDialog(
       context: context,
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setState) {
-            return AlertDialog(
-              title: Text('Nuevo Inventario'),
-              content: SingleChildScrollView(
-                child: Form(
-                  key: _formKey,
+            return Dialog(
+              insetPadding: const EdgeInsets.all(20),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: 600,
+                  maxHeight: 700,
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // Buscador de Productos
-                      TextFormField(
-                        controller: _productController,
-                        decoration: InputDecoration(
-                          labelText: 'Buscar Producto',
-                          prefixIcon: Icon(Icons.search),
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (value) {
-                          // Implementar búsqueda de productos
-                        },
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            _currentStep == 1
+                                ? 'Seleccionar Producto'
+                                : 'Datos de Inventario',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close),
+                            onPressed: () {
+                              Navigator.pop(context);
+                              provider.clearProductosDisponibles();
+                              provider.clearSucursalesDisponibles();
+                            },
+                          ),
+                        ],
                       ),
-                      SizedBox(height: 16),
+                      const Divider(),
+                      Expanded(
+                        child: SingleChildScrollView(
+                          child: Form(
+                            key: _formKey,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (_currentStep == 1) ...[
+                                  // Paso 1: Selección de producto
+                                  TextFormField(
+                                    controller: _productSearchController,
+                                    decoration: InputDecoration(
+                                      labelText: 'Buscar Producto',
+                                      prefixIcon: const Icon(Icons.search),
+                                      border: const OutlineInputBorder(),
+                                      suffixIcon: _selectedProduct != null
+                                          ? IconButton(
+                                              icon: const Icon(Icons.clear),
+                                              onPressed: () {
+                                                setState(() {
+                                                  _selectedProduct = null;
+                                                  _productSearchController
+                                                      .clear();
+                                                  provider
+                                                      .clearProductosDisponibles();
+                                                });
+                                              },
+                                            )
+                                          : null,
+                                    ),
+                                    onChanged: (value) async {
+                                      if (value.length > 2) {
+                                        setState(
+                                          () => _isLoadingProducts = true,
+                                        );
+                                        try {
+                                          await provider
+                                              .loadProductosDisponibles(
+                                                value,
+                                                sucursalId: user.isSuperAdmin
+                                                    ? null
+                                                    : user.sucursalId,
+                                              );
+                                        } catch (e) {
+                                          setState(() {
+                                            _errorMessage =
+                                                'Error al buscar productos: ${e.toString()}';
+                                          });
+                                        } finally {
+                                          setState(
+                                            () => _isLoadingProducts = false,
+                                          );
+                                        }
+                                      }
+                                    },
+                                  ),
+                                  const SizedBox(height: 16),
 
-                      // Selector de Sucursal
-                      DropdownButtonFormField<String>(
-                        value: _selectedBranch,
-                        decoration: InputDecoration(
-                          labelText: 'Sucursal',
-                          border: OutlineInputBorder(),
+                                  if (_isLoadingProducts)
+                                    const Center(
+                                      child: CircularProgressIndicator(),
+                                    )
+                                  else if (_errorMessage != null)
+                                    Text(
+                                      _errorMessage!,
+                                      style: TextStyle(color: AppColors.red600),
+                                    )
+                                  else if (provider
+                                          .productosDisponibles
+                                          .isEmpty &&
+                                      _productSearchController.text.isNotEmpty)
+                                    const Text('No se encontraron productos')
+                                  else
+                                    SizedBox(
+                                      height: 200,
+                                      child: ListView.separated(
+                                        itemCount: provider
+                                            .productosDisponibles
+                                            .length,
+                                        itemBuilder: (context, index) {
+                                          final producto = provider
+                                              .productosDisponibles[index];
+                                          return ListTile(
+                                            title: Text(producto.nombre),
+                                            subtitle: Text(
+                                              '${producto.composicion} - ${producto.presentacion}',
+                                            ),
+                                            trailing: Text(
+                                              producto.categoria ?? '',
+                                            ),
+                                            onTap: () async {
+                                              setState(() {
+                                                _selectedProduct = producto;
+                                                _productSearchController.text =
+                                                    producto.nombre;
+                                                _isLoadingSucursales = true;
+                                                _errorMessage = null;
+                                              });
+
+                                              try {
+                                                await provider
+                                                    .loadSucursalesDisponibles(
+                                                      producto.id,
+                                                    );
+                                                if (provider
+                                                    .sucursalesDisponibles
+                                                    .isNotEmpty) {
+                                                  setState(() {
+                                                    _selectedSucursal = provider
+                                                        .sucursalesDisponibles
+                                                        .first;
+                                                  });
+                                                } else {
+                                                  setState(() {
+                                                    _errorMessage =
+                                                        'No hay sucursales disponibles para este producto';
+                                                  });
+                                                }
+                                              } catch (e) {
+                                                setState(() {
+                                                  _errorMessage =
+                                                      'Error al cargar sucursales: ${e.toString()}';
+                                                });
+                                              } finally {
+                                                setState(
+                                                  () => _isLoadingSucursales =
+                                                      false,
+                                                );
+                                              }
+                                            },
+                                          );
+                                        },
+                                        separatorBuilder: (context, index) =>
+                                            const Divider(height: 1),
+                                      ),
+                                    ),
+
+                                  if (_selectedProduct != null) ...[
+                                    const SizedBox(height: 16),
+                                    Card(
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(12),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              _selectedProduct!.nombre,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 16,
+                                              ),
+                                            ),
+                                            if (_selectedProduct!
+                                                .composicion
+                                                .isNotEmpty)
+                                              Text(
+                                                _selectedProduct!.composicion,
+                                              ),
+                                            if (_selectedProduct!
+                                                .presentacion
+                                                .isNotEmpty)
+                                              Text(
+                                                _selectedProduct!.presentacion,
+                                              ),
+                                            if (_selectedProduct!.categoria !=
+                                                null)
+                                              Text(
+                                                'Categoría: ${_selectedProduct!.categoria}',
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ] else ...[
+                                  // Paso 2: Datos de inventario
+                                  if (_selectedProduct == null ||
+                                      _selectedSucursal == null)
+                                    const Text(
+                                      'Error: No se seleccionó producto o sucursal',
+                                      style: TextStyle(color: AppColors.red600),
+                                    )
+                                  else ...[
+                                    Card(
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(12),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              _selectedProduct!.nombre,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 16,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Text(_selectedProduct!.composicion),
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              'Sucursal: ${_selectedSucursal!.nombre}',
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 16),
+
+                                    // Selector de sucursal (solo para super admin)
+                                    if (user.isSuperAdmin)
+                                      DropdownButtonFormField<Sucursal>(
+                                        value: _selectedSucursal,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Sucursal',
+                                          border: OutlineInputBorder(),
+                                        ),
+                                        items: provider.sucursalesDisponibles
+                                            .map((sucursal) {
+                                              return DropdownMenuItem<Sucursal>(
+                                                value: sucursal,
+                                                child: Text(sucursal.nombre),
+                                              );
+                                            })
+                                            .toList(),
+                                        onChanged: (sucursal) {
+                                          setState(() {
+                                            _selectedSucursal = sucursal;
+                                          });
+                                        },
+                                        validator: (value) {
+                                          if (value == null) {
+                                            return 'Seleccione una sucursal';
+                                          }
+                                          return null;
+                                        },
+                                      ),
+
+                                    const SizedBox(height: 16),
+
+                                    // Stock inicial
+                                    TextFormField(
+                                      controller: _stockController,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Stock Inicial',
+                                        border: OutlineInputBorder(),
+                                      ),
+                                      keyboardType: TextInputType.number,
+                                      validator: (value) {
+                                        if (value == null || value.isEmpty) {
+                                          return 'Ingrese el stock';
+                                        }
+                                        if (int.tryParse(value) == null) {
+                                          return 'Número inválido';
+                                        }
+                                        if (int.parse(value) < 0) {
+                                          return 'El stock no puede ser negativo';
+                                        }
+                                        return null;
+                                      },
+                                    ),
+
+                                    const SizedBox(height: 16),
+
+                                    // Stock mínimo
+                                    TextFormField(
+                                      controller: _minStockController,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Stock Mínimo',
+                                        border: OutlineInputBorder(),
+                                      ),
+                                      keyboardType: TextInputType.number,
+                                      validator: (value) {
+                                        if (value == null || value.isEmpty) {
+                                          return 'Ingrese el stock mínimo';
+                                        }
+                                        if (int.tryParse(value) == null) {
+                                          return 'Número inválido';
+                                        }
+                                        if (int.parse(value) < 0) {
+                                          return 'El stock mínimo no puede ser negativo';
+                                        }
+                                        return null;
+                                      },
+                                    ),
+
+                                    const SizedBox(height: 16),
+
+                                    // Stock máximo
+                                    TextFormField(
+                                      controller: _maxStockController,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Stock Máximo',
+                                        border: OutlineInputBorder(),
+                                      ),
+                                      keyboardType: TextInputType.number,
+                                      validator: (value) {
+                                        if (value == null || value.isEmpty) {
+                                          return 'Ingrese el stock máximo';
+                                        }
+                                        if (int.tryParse(value) == null) {
+                                          return 'Número inválido';
+                                        }
+                                        if (int.parse(value) < 0) {
+                                          return 'El stock máximo no puede ser negativo';
+                                        }
+                                        if (_minStockController
+                                                .text
+                                                .isNotEmpty &&
+                                            int.parse(value) <
+                                                int.parse(
+                                                  _minStockController.text,
+                                                )) {
+                                          return 'Debe ser mayor al stock mínimo';
+                                        }
+                                        return null;
+                                      },
+                                    ),
+
+                                    const SizedBox(height: 16),
+
+                                    // Precio contado
+                                    TextFormField(
+                                      controller: _cashPriceController,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Precio Contado (Bs.)',
+                                        border: OutlineInputBorder(),
+                                      ),
+                                      keyboardType:
+                                          TextInputType.numberWithOptions(
+                                            decimal: true,
+                                          ),
+                                      validator: (value) {
+                                        if (value == null || value.isEmpty) {
+                                          return 'Ingrese el precio';
+                                        }
+                                        if (double.tryParse(value) == null) {
+                                          return 'Número inválido';
+                                        }
+                                        if (double.parse(value) < 0) {
+                                          return 'El precio no puede ser negativo';
+                                        }
+                                        return null;
+                                      },
+                                    ),
+
+                                    const SizedBox(height: 16),
+
+                                    // Precio crédito
+                                    TextFormField(
+                                      controller: _creditPriceController,
+                                      decoration: const InputDecoration(
+                                        labelText: 'Precio Crédito (Bs.)',
+                                        border: OutlineInputBorder(),
+                                      ),
+                                      keyboardType:
+                                          TextInputType.numberWithOptions(
+                                            decimal: true,
+                                          ),
+                                      validator: (value) {
+                                        if (value == null || value.isEmpty) {
+                                          return 'Ingrese el precio';
+                                        }
+                                        if (double.tryParse(value) == null) {
+                                          return 'Número inválido';
+                                        }
+                                        if (double.parse(value) < 0) {
+                                          return 'El precio no puede ser negativo';
+                                        }
+                                        return null;
+                                      },
+                                    ),
+                                  ],
+                                ],
+                              ],
+                            ),
+                          ),
                         ),
-                        items: _branches.map((branch) {
-                          return DropdownMenuItem<String>(
-                            value: branch['id'].toString(),
-                            child: Text(branch['name']),
-                          );
-                        }).toList(),
-                        onChanged: (value) {
-                          setState(() {
-                            _selectedBranch = value;
-                          });
-                        },
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Seleccione una sucursal';
-                          }
-                          return null;
-                        },
                       ),
-                      SizedBox(height: 16),
+                      const SizedBox(height: 16),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          if (_currentStep == 2)
+                            TextButton(
+                              onPressed: () {
+                                setState(() => _currentStep = 1);
+                              },
+                              child: const Text('Atrás'),
+                            ),
+                          if (_currentStep == 1)
+                            ElevatedButton(
+                              onPressed: () {
+                                if (_selectedProduct == null) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Seleccione un producto'),
+                                    ),
+                                  );
+                                  return;
+                                }
 
-                      // Stock Inicial
-                      TextFormField(
-                        controller: _stockController,
-                        decoration: InputDecoration(
-                          labelText: 'Stock Inicial',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.number,
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Ingrese el stock inicial';
-                          }
-                          if (int.tryParse(value) == null) {
-                            return 'Ingrese un número válido';
-                          }
-                          return null;
-                        },
-                      ),
-                      SizedBox(height: 16),
+                                if (provider.sucursalesDisponibles.isEmpty) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'No hay sucursales disponibles para este producto',
+                                      ),
+                                    ),
+                                  );
+                                  return;
+                                }
 
-                      // Stock Mínimo
-                      TextFormField(
-                        controller: _minStockController,
-                        decoration: InputDecoration(
-                          labelText: 'Stock Mínimo',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.number,
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Ingrese el stock mínimo';
-                          }
-                          if (int.tryParse(value) == null) {
-                            return 'Ingrese un número válido';
-                          }
-                          return null;
-                        },
-                      ),
-                      SizedBox(height: 16),
+                                setState(() => _currentStep = 2);
+                              },
+                              child: const Text('Siguiente'),
+                            )
+                          else
+                            ElevatedButton(
+                              onPressed: () async {
+                                if (_formKey.currentState!.validate() &&
+                                    _selectedProduct != null &&
+                                    _selectedSucursal != null) {
+                                  final data = {
+                                    'producto_id': _selectedProduct!.id,
+                                    'sucursal_id': _selectedSucursal!.id,
+                                    'stock': int.parse(_stockController.text),
+                                    'stock_minimo': int.parse(
+                                      _minStockController.text,
+                                    ),
+                                    'stock_maximo': int.parse(
+                                      _maxStockController.text,
+                                    ),
+                                    'precio_contado': double.parse(
+                                      _cashPriceController.text,
+                                    ),
+                                    'precio_credito': double.parse(
+                                      _creditPriceController.text,
+                                    ),
+                                  };
 
-                      // Stock Máximo
-                      TextFormField(
-                        controller: _maxStockController,
-                        decoration: InputDecoration(
-                          labelText: 'Stock Máximo',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.number,
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Ingrese el stock máximo';
-                          }
-                          if (int.tryParse(value) == null) {
-                            return 'Ingrese un número válido';
-                          }
-                          if (_minStockController.text.isNotEmpty &&
-                              int.tryParse(value)! <
-                                  int.tryParse(_minStockController.text)!) {
-                            return 'Debe ser mayor que el stock mínimo';
-                          }
-                          return null;
-                        },
-                      ),
-                      SizedBox(height: 16),
-
-                      // Precio Contado
-                      TextFormField(
-                        controller: _cashPriceController,
-                        decoration: InputDecoration(
-                          labelText: 'Precio Contado (Bs.)',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Ingrese el precio contado';
-                          }
-                          if (double.tryParse(value) == null) {
-                            return 'Ingrese un número válido';
-                          }
-                          return null;
-                        },
-                      ),
-                      SizedBox(height: 16),
-
-                      // Precio Crédito
-                      TextFormField(
-                        controller: _creditPriceController,
-                        decoration: InputDecoration(
-                          labelText: 'Precio Crédito (Bs.)',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Ingrese el precio crédito';
-                          }
-                          if (double.tryParse(value) == null) {
-                            return 'Ingrese un número válido';
-                          }
-                          return null;
-                        },
+                                  try {
+                                    await provider.createInventoryItem(data);
+                                    if (mounted) {
+                                      Navigator.pop(context);
+                                      provider.clearProductosDisponibles();
+                                      provider.clearSucursalesDisponibles();
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'Inventario creado exitosamente',
+                                          ),
+                                          backgroundColor: AppColors.green600,
+                                        ),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            'Error al crear inventario: ${e.toString()}',
+                                          ),
+                                          backgroundColor: AppColors.red600,
+                                        ),
+                                      );
+                                    }
+                                  }
+                                }
+                              },
+                              child: const Text('Guardar Inventario'),
+                            ),
+                        ],
                       ),
                     ],
                   ),
                 ),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(
-                    'Cancelar',
-                    style: TextStyle(color: AppColors.gray600),
-                  ),
-                ),
-                ElevatedButton(
-                  onPressed: () {
-                    if (_formKey.currentState!.validate()) {
-                      // Crear nuevo item de inventario
-                      final newItem = {
-                        'id': _inventoryItems.length + 1,
-                        'productId': 100 + _inventoryItems.length + 1,
-                        'productName':
-                            'Nuevo Producto', // Esto debería venir de la selección
-                        'composition': 'Composición',
-                        'branchId': int.parse(_selectedBranch!),
-                        'branchName': _branches.firstWhere(
-                          (b) => b['id'].toString() == _selectedBranch,
-                        )['name'],
-                        'stock': int.parse(_stockController.text),
-                        'minStock': int.parse(_minStockController.text),
-                        'maxStock': int.parse(_maxStockController.text),
-                        'cashPrice': double.parse(_cashPriceController.text),
-                        'creditPrice': double.parse(
-                          _creditPriceController.text,
-                        ),
-                        'movements': [],
-                      };
-
-                      // Actualizar el estado
-                      setState(() {
-                        _inventoryItems.add(newItem);
-                      });
-
-                      Navigator.pop(context);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            'Nuevo inventario creado correctamente',
-                          ),
-                        ),
-                      );
-                    }
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.green600,
-                  ),
-                  child: Text(
-                    'Crear Inventario',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                ),
-              ],
             );
           },
         );
       },
-    );
+    ).then((_) {
+      provider.clearProductosDisponibles();
+      provider.clearSucursalesDisponibles();
+    });
   }
 
-  void _showEditInventoryDialog(Map<String, dynamic> item) {
+  void _showEditInventoryDialog(InventoryItem item) {
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
+
     final _formKey = GlobalKey<FormState>();
-    final TextEditingController _stockController = TextEditingController(
-      text: item['stock'].toString(),
+    final _stockController = TextEditingController(text: item.stock.toString());
+    final _minStockController = TextEditingController(
+      text: item.stockMinimo.toString(),
     );
-    final TextEditingController _minStockController = TextEditingController(
-      text: item['minStock'].toString(),
+    final _maxStockController = TextEditingController(
+      text: item.stockMaximo.toString(),
     );
-    final TextEditingController _maxStockController = TextEditingController(
-      text: item['maxStock'].toString(),
+    final _cashPriceController = TextEditingController(
+      text: item.precioContado.toStringAsFixed(2),
     );
-    final TextEditingController _cashPriceController = TextEditingController(
-      text: item['cashPrice'].toStringAsFixed(2),
-    );
-    final TextEditingController _creditPriceController = TextEditingController(
-      text: item['creditPrice'].toStringAsFixed(2),
+    final _creditPriceController = TextEditingController(
+      text: item.precioCredito.toStringAsFixed(2),
     );
 
     showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: Text('Editar ${item['productName']}'),
+          title: Text('Editar ${item.nombreProducto}'),
           content: SingleChildScrollView(
             child: Form(
               key: _formKey,
@@ -1063,7 +1282,7 @@ class _InventoryViewState extends State<InventoryView> {
                     keyboardType: TextInputType.number,
                     validator: (value) {
                       if (value == null || value.isEmpty) {
-                        return 'Por favor ingrese el stock';
+                        return 'Ingrese el stock actual';
                       }
                       if (int.tryParse(value) == null) {
                         return 'Ingrese un número válido';
@@ -1071,7 +1290,7 @@ class _InventoryViewState extends State<InventoryView> {
                       return null;
                     },
                   ),
-                  SizedBox(height: 16),
+                  const SizedBox(height: 8),
 
                   // Stock Mínimo
                   TextFormField(
@@ -1083,7 +1302,7 @@ class _InventoryViewState extends State<InventoryView> {
                     keyboardType: TextInputType.number,
                     validator: (value) {
                       if (value == null || value.isEmpty) {
-                        return 'Por favor ingrese el stock mínimo';
+                        return 'Ingrese el stock mínimo';
                       }
                       if (int.tryParse(value) == null) {
                         return 'Ingrese un número válido';
@@ -1091,7 +1310,7 @@ class _InventoryViewState extends State<InventoryView> {
                       return null;
                     },
                   ),
-                  SizedBox(height: 16),
+                  const SizedBox(height: 8),
 
                   // Stock Máximo
                   TextFormField(
@@ -1103,7 +1322,7 @@ class _InventoryViewState extends State<InventoryView> {
                     keyboardType: TextInputType.number,
                     validator: (value) {
                       if (value == null || value.isEmpty) {
-                        return 'Por favor ingrese el stock máximo';
+                        return 'Ingrese el stock máximo';
                       }
                       if (int.tryParse(value) == null) {
                         return 'Ingrese un número válido';
@@ -1115,7 +1334,7 @@ class _InventoryViewState extends State<InventoryView> {
                       return null;
                     },
                   ),
-                  SizedBox(height: 16),
+                  const SizedBox(height: 8),
 
                   // Precio Contado
                   TextFormField(
@@ -1129,7 +1348,7 @@ class _InventoryViewState extends State<InventoryView> {
                     ),
                     validator: (value) {
                       if (value == null || value.isEmpty) {
-                        return 'Por favor ingrese el precio';
+                        return 'Ingrese el precio contado';
                       }
                       if (double.tryParse(value) == null) {
                         return 'Ingrese un número válido';
@@ -1137,7 +1356,7 @@ class _InventoryViewState extends State<InventoryView> {
                       return null;
                     },
                   ),
-                  SizedBox(height: 16),
+                  const SizedBox(height: 8),
 
                   // Precio Crédito
                   TextFormField(
@@ -1151,7 +1370,7 @@ class _InventoryViewState extends State<InventoryView> {
                     ),
                     validator: (value) {
                       if (value == null || value.isEmpty) {
-                        return 'Por favor ingrese el precio';
+                        return 'Ingrese el precio crédito';
                       }
                       if (double.tryParse(value) == null) {
                         return 'Ingrese un número válido';
@@ -1166,49 +1385,32 @@ class _InventoryViewState extends State<InventoryView> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: Text(
-                'Cancelar',
-                style: TextStyle(color: AppColors.gray600),
-              ),
+              child: const Text('Cancelar'),
             ),
             ElevatedButton(
               onPressed: () {
                 if (_formKey.currentState!.validate()) {
-                  // Aquí iría la lógica para guardar los cambios
-                  final updatedItem = {
-                    ...item,
+                  final data = {
                     'stock': int.parse(_stockController.text),
-                    'minStock': int.parse(_minStockController.text),
-                    'maxStock': int.parse(_maxStockController.text),
-                    'cashPrice': double.parse(_cashPriceController.text),
-                    'creditPrice': double.parse(_creditPriceController.text),
+                    'stock_minimo': int.parse(_minStockController.text),
+                    'stock_maximo': int.parse(_maxStockController.text),
+                    'precio_contado': double.parse(_cashPriceController.text),
+                    'precio_credito': double.parse(_creditPriceController.text),
                   };
 
-                  // Actualizar el estado
-                  setState(() {
-                    final index = _inventoryItems.indexWhere(
-                      (i) => i['id'] == item['id'],
-                    );
-                    if (index != -1) {
-                      _inventoryItems[index] = updatedItem;
-                    }
-                  });
-
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Inventario actualizado correctamente'),
-                    ),
-                  );
+                  provider
+                      .updateInventoryItem(item.id, data)
+                      .then((_) {
+                        Navigator.pop(context);
+                      })
+                      .catchError((e) {
+                        ScaffoldMessenger.of(
+                          context,
+                        ).showSnackBar(SnackBar(content: Text(e.toString())));
+                      });
                 }
               },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.blue600,
-              ),
-              child: Text(
-                'Guardar Cambios',
-                style: TextStyle(color: Colors.white),
-              ),
+              child: const Text('Guardar Cambios'),
             ),
           ],
         );
@@ -1216,12 +1418,14 @@ class _InventoryViewState extends State<InventoryView> {
     );
   }
 
-  void _showTransferDialog(Map<String, dynamic> item) {
-    final _formKey = GlobalKey<FormState>();
-    final TextEditingController _quantityController = TextEditingController();
-    final TextEditingController _notesController = TextEditingController();
+  void _showTransferDialog(InventoryItem item) {
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
+    final user = Provider.of<User>(context, listen: false);
 
-    String? _selectedDestinationBranch;
+    final _formKey = GlobalKey<FormState>();
+    final _quantityController = TextEditingController();
+    final _notesController = TextEditingController();
+    String? _selectedDestinationSucursalId;
 
     showDialog(
       context: context,
@@ -1229,7 +1433,7 @@ class _InventoryViewState extends State<InventoryView> {
         return StatefulBuilder(
           builder: (context, setState) {
             return AlertDialog(
-              title: Text('Transferir ${item['productName']}'),
+              title: Text('Transferir ${item.nombreProducto}'),
               content: SingleChildScrollView(
                 child: Form(
                   key: _formKey,
@@ -1241,7 +1445,7 @@ class _InventoryViewState extends State<InventoryView> {
                         controller: _quantityController,
                         decoration: InputDecoration(
                           labelText: 'Cantidad a Transferir',
-                          hintText: 'Máximo: ${item['stock']}',
+                          hintText: 'Máximo: ${item.stock}',
                           border: OutlineInputBorder(),
                         ),
                         keyboardType: TextInputType.number,
@@ -1255,33 +1459,33 @@ class _InventoryViewState extends State<InventoryView> {
                           if (int.parse(value) <= 0) {
                             return 'La cantidad debe ser mayor a 0';
                           }
-                          if (int.parse(value) > item['stock']) {
+                          if (int.parse(value) > item.stock) {
                             return 'No hay suficiente stock';
                           }
                           return null;
                         },
                       ),
-                      SizedBox(height: 16),
+                      const SizedBox(height: 8),
 
                       // Sucursal Destino
                       DropdownButtonFormField<String>(
-                        value: _selectedDestinationBranch,
+                        value: _selectedDestinationSucursalId,
                         decoration: InputDecoration(
                           labelText: 'Sucursal Destino',
                           border: OutlineInputBorder(),
                         ),
-                        items: _branches
-                            .where((branch) => branch['id'] != item['branchId'])
-                            .map((branch) {
-                              return DropdownMenuItem<String>(
-                                value: branch['id'].toString(),
-                                child: Text(branch['name']),
+                        items: provider.sucursales
+                            .where((sucursal) => sucursal.id != item.sucursalId)
+                            .map((sucursal) {
+                              return DropdownMenuItem(
+                                value: sucursal.id.toString(),
+                                child: Text(sucursal.nombre),
                               );
                             })
                             .toList(),
                         onChanged: (value) {
                           setState(() {
-                            _selectedDestinationBranch = value;
+                            _selectedDestinationSucursalId = value;
                           });
                         },
                         validator: (value) {
@@ -1291,7 +1495,7 @@ class _InventoryViewState extends State<InventoryView> {
                           return null;
                         },
                       ),
-                      SizedBox(height: 16),
+                      const SizedBox(height: 8),
 
                       // Notas
                       TextFormField(
@@ -1309,100 +1513,37 @@ class _InventoryViewState extends State<InventoryView> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
-                  child: Text(
-                    'Cancelar',
-                    style: TextStyle(color: AppColors.gray600),
-                  ),
+                  child: const Text('Cancelar'),
                 ),
                 ElevatedButton(
                   onPressed: () {
-                    if (_formKey.currentState!.validate()) {
-                      // Crear movimiento de transferencia
-                      final transfer = {
-                        'date': DateTime.now().toString(),
-                        'type': 'Transferencia',
-                        'description':
-                            'Transferencia de ${_quantityController.text} unidades desde ${item['branchName']} hacia ${_branches.firstWhere((b) => b['id'].toString() == _selectedDestinationBranch)['name']}',
-                        'quantity': int.parse(_quantityController.text),
-                        'responsible': 'Usuario Actual',
-                        'notes': _notesController.text.isNotEmpty
+                    if (_formKey.currentState!.validate() &&
+                        _selectedDestinationSucursalId != null) {
+                      final data = {
+                        'producto_id': item.productoId,
+                        'sucursal_origen_id': item.sucursalId,
+                        'sucursal_destino_id': int.parse(
+                          _selectedDestinationSucursalId!,
+                        ),
+                        'cantidad': int.parse(_quantityController.text),
+                        'notas': _notesController.text.isNotEmpty
                             ? _notesController.text
                             : null,
                       };
 
-                      // Actualizar el estado
-                      setState(() {
-                        // Reducir stock en origen
-                        final originIndex = _inventoryItems.indexWhere(
-                          (i) => i['id'] == item['id'],
-                        );
-                        if (originIndex != -1) {
-                          _inventoryItems[originIndex]['stock'] -= int.parse(
-                            _quantityController.text,
-                          );
-                          _inventoryItems[originIndex]['movements'].insert(
-                            0,
-                            transfer,
-                          );
-                        }
-
-                        // Buscar si ya existe en destino
-                        final destinationIndex = _inventoryItems.indexWhere(
-                          (i) =>
-                              i['productId'] == item['productId'] &&
-                              i['branchId'] ==
-                                  int.parse(_selectedDestinationBranch!),
-                        );
-
-                        if (destinationIndex != -1) {
-                          // Aumentar stock en destino existente
-                          _inventoryItems[destinationIndex]['stock'] +=
-                              int.parse(_quantityController.text);
-                          _inventoryItems[destinationIndex]['movements'].insert(
-                            0,
-                            transfer,
-                          );
-                        } else {
-                          // Crear nuevo registro en destino
-                          final newItem = {
-                            'id': _inventoryItems.length + 1,
-                            'productId': item['productId'],
-                            'productName': item['productName'],
-                            'composition': item['composition'],
-                            'branchId': int.parse(_selectedDestinationBranch!),
-                            'branchName': _branches.firstWhere(
-                              (b) =>
-                                  b['id'].toString() ==
-                                  _selectedDestinationBranch,
-                            )['name'],
-                            'stock': int.parse(_quantityController.text),
-                            'minStock': item['minStock'],
-                            'maxStock': item['maxStock'],
-                            'cashPrice': item['cashPrice'],
-                            'creditPrice': item['creditPrice'],
-                            'movements': [transfer],
-                          };
-                          _inventoryItems.add(newItem);
-                        }
-                      });
-
-                      Navigator.pop(context);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            'Transferencia realizada correctamente',
-                          ),
-                        ),
-                      );
+                      provider
+                          .transferInventory(data)
+                          .then((_) {
+                            Navigator.pop(context);
+                          })
+                          .catchError((e) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text(e.toString())),
+                            );
+                          });
                     }
                   },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.orange600,
-                  ),
-                  child: Text(
-                    'Confirmar Transferencia',
-                    style: TextStyle(color: Colors.white),
-                  ),
+                  child: const Text('Confirmar Transferencia'),
                 ),
               ],
             );
@@ -1412,7 +1553,9 @@ class _InventoryViewState extends State<InventoryView> {
     );
   }
 
-  void _showDeleteConfirmation(Map<String, dynamic> item) {
+  void _showDeleteConfirmation(InventoryItem item) {
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
+
     showDialog(
       context: context,
       builder: (context) {
@@ -1424,21 +1567,21 @@ class _InventoryViewState extends State<InventoryView> {
             children: [
               Text(
                 '¿Está seguro de eliminar este producto del inventario?',
-                style: TextStyle(fontSize: 16),
+                style: const TextStyle(fontSize: 16),
               ),
-              SizedBox(height: 8),
+              const SizedBox(height: 8),
               Text(
-                'Producto: ${item['productName']}',
-                style: TextStyle(fontWeight: FontWeight.bold),
+                'Producto: ${item.nombreProducto}',
+                style: const TextStyle(fontWeight: FontWeight.bold),
               ),
               Text(
-                'Sucursal: ${item['branchName']}',
-                style: TextStyle(fontWeight: FontWeight.bold),
+                'Sucursal: ${item.nombreSucursal}',
+                style: const TextStyle(fontWeight: FontWeight.bold),
               ),
-              SizedBox(height: 16),
-              if (item['stock'] > 0)
+              const SizedBox(height: 16),
+              if (item.stock > 0)
                 Text(
-                  '⚠️ Advertencia: Este producto tiene ${item['stock']} unidades en stock.',
+                  '⚠️ Advertencia: Este producto tiene ${item.stock} unidades en stock.',
                   style: TextStyle(color: AppColors.red600),
                 ),
             ],
@@ -1450,24 +1593,16 @@ class _InventoryViewState extends State<InventoryView> {
             ),
             ElevatedButton(
               onPressed: () {
-                // Eliminar el producto
-                setState(() {
-                  _inventoryItems.removeWhere((i) => i['id'] == item['id']);
-                });
-
-                Navigator.pop(context);
-
-                // Mostrar mensaje de éxito
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      'Producto eliminado correctamente',
-                      style: TextStyle(color: Colors.white),
-                    ),
-                    backgroundColor: AppColors.green600,
-                    duration: Duration(seconds: 2),
-                  ),
-                );
+                provider
+                    .deleteInventoryItem(item.id)
+                    .then((_) {
+                      Navigator.pop(context);
+                    })
+                    .catchError((e) {
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text(e.toString())));
+                    });
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.red600,
@@ -1482,70 +1617,531 @@ class _InventoryViewState extends State<InventoryView> {
       },
     );
   }
-}
 
-class StatCard extends StatelessWidget {
-  final String title;
-  final String value;
-  final IconData icon;
-  final Color color;
-  final String? percentage;
-
-  const StatCard({
-    super.key,
-    required this.title,
-    required this.value,
-    required this.icon,
-    required this.color,
-    this.percentage,
-  });
+  void _toggleExpanded(String key, int productoId) {
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
+    setState(() {
+      if (!_expandedItems.containsKey(key) || !_expandedItems[key]!) {
+        provider.loadMovimientos(productoId);
+      }
+      _expandedItems[key] = !(_expandedItems[key] ?? false);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.gray200),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(icon, color: color, size: 24),
-          ),
-          const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: TextStyle(color: AppColors.gray500, fontSize: 14),
-              ),
-              Text(
-                value,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
+    final provider = Provider.of<InventoryProvider>(context);
+    final user = Provider.of<AuthProvider>(context, listen: false).user!;
+
+    // Estadísticas
+    final criticalCount = provider.inventoryItems
+        .where((item) => _getStockStatus(item) == 'critico')
+        .length;
+    final lowCount = provider.inventoryItems
+        .where((item) => _getStockStatus(item) == 'bajo')
+        .length;
+
+    return Scaffold(
+      body: RefreshIndicator(
+        onRefresh: () async {
+          await provider.loadInventory();
+        },
+        child: CustomScrollView(
+          controller: _scrollController,
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  children: [
+                    // Estadísticas
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          _buildStatCard(
+                            'Total Productos',
+                            provider.totalItems.toString(),
+                            Icons.inventory_2_rounded,
+                            AppColors.blue500,
+                          ),
+                          const SizedBox(width: 12),
+                          _buildStatCard(
+                            'Stock Crítico',
+                            criticalCount.toString(),
+                            Icons.warning_rounded,
+                            AppColors.red600,
+                          ),
+                          const SizedBox(width: 12),
+                          _buildStatCard(
+                            'Stock Bajo',
+                            lowCount.toString(),
+                            Icons.trending_down_rounded,
+                            AppColors.yellow600,
+                          ),
+                          const SizedBox(width: 12),
+                          _buildStatCard(
+                            'Sucursales',
+                            provider.sucursales.length.toString(),
+                            Icons.store_rounded,
+                            AppColors.green600,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Buscador y Filtros
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _searchController,
+                            decoration: InputDecoration(
+                              hintText: 'Buscar productos...',
+                              prefixIcon: const Icon(Icons.search),
+                              border: OutlineInputBorder(),
+                              suffixIcon: _searchController.text.isNotEmpty
+                                  ? IconButton(
+                                      icon: const Icon(Icons.clear),
+                                      onPressed: () {
+                                        _searchController.clear();
+                                        provider.setSearchQuery('');
+                                        provider.loadInventory();
+                                      },
+                                    )
+                                  : null,
+                            ),
+                            onChanged: (value) {
+                              provider.setSearchQuery(value);
+                              provider.loadInventory();
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          onPressed: () {
+                            setState(() {
+                              _showAdvancedFilters = !_showAdvancedFilters;
+                            });
+                          },
+                          icon: const Icon(Icons.filter_alt_rounded),
+                          style: IconButton.styleFrom(
+                            backgroundColor: _showAdvancedFilters
+                                ? AppColors.orange600
+                                : AppColors.gray200,
+                            foregroundColor: _showAdvancedFilters
+                                ? Colors.white
+                                : Colors.black,
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    // Filtros avanzados
+                    if (_showAdvancedFilters)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 16.0),
+                        child: Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16.0),
+                            child: Column(
+                              children: [
+                                // Estado de Stock
+                                DropdownButtonFormField<String>(
+                                  value: 'todos',
+                                  decoration: InputDecoration(
+                                    labelText: 'Estado de Stock',
+                                    border: OutlineInputBorder(),
+                                  ),
+                                  items:
+                                      [
+                                        {'value': 'todos', 'label': 'Todos'},
+                                        {
+                                          'value': 'critico',
+                                          'label': 'Crítico',
+                                        },
+                                        {'value': 'bajo', 'label': 'Bajo'},
+                                        {'value': 'normal', 'label': 'Normal'},
+                                        {'value': 'alto', 'label': 'Alto'},
+                                      ].map((item) {
+                                        return DropdownMenuItem<String>(
+                                          value: item['value'],
+                                          child: Text(item['label']!),
+                                        );
+                                      }).toList(),
+                                  onChanged: (value) {
+                                    provider.setStockStatus(value!);
+                                    provider.loadInventory();
+                                  },
+                                ),
+                                const SizedBox(height: 16),
+
+                                // Sucursal (solo para super admin)
+                                if (user.isSuperAdmin)
+                                  DropdownButtonFormField<String>(
+                                    value: 'todas',
+                                    decoration: InputDecoration(
+                                      labelText: 'Sucursal',
+                                      border: OutlineInputBorder(),
+                                    ),
+                                    items: [
+                                      const DropdownMenuItem<String>(
+                                        value: 'todas',
+                                        child: Text('Todas las sucursales'),
+                                      ),
+                                      ...provider.sucursales.map((sucursal) {
+                                        return DropdownMenuItem<String>(
+                                          value: sucursal.id.toString(),
+                                          child: Text(sucursal.nombre),
+                                        );
+                                      }).toList(),
+                                    ],
+                                    onChanged: (value) {
+                                      provider.setSucursal(value!);
+                                      provider.loadInventory();
+                                    },
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
-              if (percentage != null)
-                Text(
-                  percentage!,
-                  style: TextStyle(
-                    color: percentage!.startsWith('+')
-                        ? AppColors.green600
-                        : AppColors.red600,
-                    fontSize: 12,
+            ),
+
+            // Lista de inventario
+            if (provider.isLoading && provider.inventoryItems.isEmpty)
+              const SliverFillRemaining(
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (provider.inventoryItems.isEmpty)
+              SliverFillRemaining(
+                child: Center(
+                  child: Text(
+                    'No se encontraron productos',
+                    style: TextStyle(color: AppColors.gray500),
                   ),
                 ),
-            ],
+              )
+            else
+              SliverList(
+                delegate: SliverChildBuilderDelegate((context, index) {
+                  final item = provider.inventoryItems[index];
+                  final stockStatus = _getStockStatus(item);
+                  final key = '${item.productoId}-${item.sucursalId}';
+
+                  return Card(
+                    margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    child: ExpansionTile(
+                      initiallyExpanded: _expandedItems[key] ?? false,
+                      onExpansionChanged: (expanded) {
+                        _toggleExpanded(key, item.productoId);
+                      },
+                      leading: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: _getStockStatusColor(
+                            stockStatus,
+                          ).withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          _getStockStatusIcon(stockStatus),
+                          color: _getStockStatusColor(stockStatus),
+                        ),
+                      ),
+                      title: Text(
+                        item.nombreProducto,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(item.composicionProducto),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              const Icon(Icons.location_on, size: 14),
+                              const SizedBox(width: 4),
+                              Text(item.nombreSucursal),
+                            ],
+                          ),
+                        ],
+                      ),
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            item.stock.toString(),
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const Text('Stock', style: TextStyle(fontSize: 12)),
+                        ],
+                      ),
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            children: [
+                              // Detalles del producto
+                              LayoutBuilder(
+                                builder: (context, constraints) {
+                                  return GridView(
+                                    shrinkWrap: true,
+                                    physics:
+                                        const NeverScrollableScrollPhysics(),
+                                    gridDelegate:
+                                        const SliverGridDelegateWithFixedCrossAxisCount(
+                                          crossAxisCount: 2,
+                                          childAspectRatio: 2,
+                                          mainAxisSpacing: 8,
+                                          crossAxisSpacing: 8,
+                                        ),
+                                    children: [
+                                      _buildDetailTile(
+                                        'Stock Mínimo',
+                                        item.stockMinimo.toString(),
+                                      ),
+                                      _buildDetailTile(
+                                        'Stock Máximo',
+                                        item.stockMaximo.toString(),
+                                      ),
+                                      _buildDetailTile(
+                                        'Precio Contado',
+                                        'Bs. ${item.precioContado.toStringAsFixed(2)}',
+                                      ),
+                                      _buildDetailTile(
+                                        'Precio Crédito',
+                                        'Bs. ${item.precioCredito.toStringAsFixed(2)}',
+                                      ),
+                                      _buildDetailTile(
+                                        '% Disponible',
+                                        '${((item.stock / item.stockMaximo) * 100).toStringAsFixed(0)}%',
+                                        showProgress: true,
+                                        progressValue:
+                                            item.stock / item.stockMaximo,
+                                      ),
+                                    ],
+                                  );
+                                },
+                              ),
+
+                              const SizedBox(height: 16),
+
+                              // Botones de acción
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceEvenly,
+                                children: [
+                                  if (user.isAdmin || user.isSuperAdmin)
+                                    IconButton(
+                                      onPressed: () =>
+                                          _showEditInventoryDialog(item),
+                                      icon: const Icon(Icons.edit),
+                                      color: AppColors.blue600,
+                                      tooltip: 'Editar',
+                                    ),
+                                  if (user.isAdmin || user.isSuperAdmin)
+                                    IconButton(
+                                      onPressed: () =>
+                                          _showTransferDialog(item),
+                                      icon: const Icon(Icons.swap_horiz),
+                                      color: AppColors.purple600,
+                                      tooltip: 'Transferir',
+                                    ),
+                                  if (user.isSuperAdmin)
+                                    IconButton(
+                                      onPressed: () =>
+                                          _showDeleteConfirmation(item),
+                                      icon: const Icon(Icons.delete),
+                                      color: AppColors.red600,
+                                      tooltip: 'Eliminar',
+                                    ),
+                                ],
+                              ),
+
+                              // Historial de movimientos
+                              const Divider(),
+                              const Text(
+                                'Historial de Movimientos',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+
+                              if (item.movimientos.isEmpty)
+                                const Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 16.0),
+                                  child: Text(
+                                    'No hay movimientos registrados para este producto',
+                                    style: TextStyle(color: AppColors.gray500),
+                                  ),
+                                )
+                              else
+                                ...item.movimientos.map((movimiento) {
+                                  return ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    title: Text(movimiento.descripcion),
+                                    subtitle: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          '${movimiento.fecha.toLocal().toString().substring(0, 16)} - ${movimiento.adminNombre ?? 'Sistema'}',
+                                        ),
+                                        if (movimiento.notas != null)
+                                          Text('Notas: ${movimiento.notas}'),
+                                      ],
+                                    ),
+                                    trailing: Text(
+                                      '${movimiento.cantidad} unidades',
+                                      style: TextStyle(
+                                        color: movimiento.tipo == 'entrada'
+                                            ? AppColors.green600
+                                            : AppColors.red600,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  );
+                                }).toList(),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }, childCount: provider.inventoryItems.length),
+              ),
+
+            // Paginación
+            if (provider.isLoading && provider.inventoryItems.isNotEmpty)
+              const SliverToBoxAdapter(
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (provider.totalItems > provider.itemsPerPage)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton(
+                        onPressed: provider.currentPage > 1
+                            ? () {
+                                provider.setPage(provider.currentPage - 1);
+                                provider.loadInventory();
+                              }
+                            : null,
+                        icon: const Icon(Icons.chevron_left),
+                      ),
+                      Text(
+                        'Página ${provider.currentPage} de ${(provider.totalItems / provider.itemsPerPage).ceil()}',
+                      ),
+                      IconButton(
+                        onPressed:
+                            provider.currentPage * provider.itemsPerPage <
+                                provider.totalItems
+                            ? () {
+                                provider.setPage(provider.currentPage + 1);
+                                provider.loadInventory();
+                              }
+                            : null,
+                        icon: const Icon(Icons.chevron_right),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+      floatingActionButton: (user.isAdmin || user.isSuperAdmin)
+          ? FloatingActionButton(
+              onPressed: _showAddInventoryDialog,
+              backgroundColor: AppColors.orange600,
+              child: const Icon(Icons.add, color: Colors.white),
+            )
+          : null,
+    );
+  }
+
+  Widget _buildStatCard(
+    String title,
+    String value,
+    IconData icon,
+    Color color,
+  ) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, color: color),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(color: AppColors.gray600, fontSize: 14),
+                ),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDetailTile(
+    String title,
+    String value, {
+    bool showProgress = false,
+    double? progressValue,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.all(8.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: TextStyle(color: AppColors.gray600, fontSize: 14)),
+          Text(
+            value,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
           ),
+          if (showProgress && progressValue != null)
+            LinearProgressIndicator(
+              value: progressValue,
+              backgroundColor: AppColors.gray200,
+              color: progressValue < 0.2
+                  ? AppColors.red600
+                  : progressValue < 0.5
+                  ? AppColors.yellow600
+                  : AppColors.green600,
+            ),
         ],
       ),
     );

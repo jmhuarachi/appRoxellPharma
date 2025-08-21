@@ -2,7 +2,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:roxellpharma/core/costants/app_colors.dart';
+import 'package:roxellpharma/core/utils/storage_util.dart';
 import 'package:roxellpharma/features/auth/domain/repositories/auth_repository_impl.dart';
+import 'package:roxellpharma/features/dashboard/orders/presentation/providers/orders_provider.dart';
+import 'package:roxellpharma/features/dashboard/views/inventory_view.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:roxellpharma/core/services/auth_service.dart';
 import 'package:roxellpharma/core/services/notifications_service.dart';
@@ -13,20 +16,20 @@ import 'package:roxellpharma/features/dashboard/dashboard_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   final sharedPrefs = await SharedPreferences.getInstance();
   final authService = AuthService(sharedPrefs);
   final authRepository = AuthRepositoryImpl(authService);
+  final storageUtil = StorageUtil(sharedPrefs);
 
   runApp(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider(
-          create: (_) => AuthProvider(authRepository),
-        ),
-        ChangeNotifierProvider(  
-          create: (_) => NotificationsService(),
-        ),
+        ChangeNotifierProvider(create: (_) => AuthProvider(authRepository)),
+        ChangeNotifierProvider(create: (_) => NotificationsService()),
+        ChangeNotifierProvider(create: (_) => InventoryProvider(storageUtil)),
+        ChangeNotifierProvider(create: (_) => OrdersProvider(storageUtil)),
+        Provider<StorageUtil>(create: (_) => storageUtil),
       ],
       child: const MyApp(),
     ),
@@ -53,31 +56,19 @@ class MyApp extends StatelessWidget {
           ),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(
-              color: Color(0xFFD1D5DB),
-              width: 1,
-            ),
+            borderSide: const BorderSide(color: Color(0xFFD1D5DB), width: 1),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(
-              color: Color(0xFFD1D5DB),
-              width: 1,
-            ),
+            borderSide: const BorderSide(color: Color(0xFFD1D5DB), width: 1),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(
-              color: AppColors.orange500,
-              width: 2,
-            ),
+            borderSide: const BorderSide(color: AppColors.orange500, width: 2),
           ),
           errorBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(
-              color: Color(0xFFDC2626),
-              width: 1,
-            ),
+            borderSide: const BorderSide(color: Color(0xFFDC2626), width: 1),
           ),
         ),
       ),
@@ -112,15 +103,13 @@ class _AuthWrapperState extends State<AuthWrapper> {
         // Mostrar indicador de carga mientras se verifica el estado
         if (authProvider.isLoading) {
           return const Scaffold(
-            body: Center(
-              child: CircularProgressIndicator(),
-            ),
+            body: Center(child: CircularProgressIndicator()),
           );
         }
 
         // Mostrar la pantalla correspondiente según el estado de autenticación
-        return authProvider.user != null 
-            ? const DashboardScreen() 
+        return authProvider.user != null
+            ? const DashboardScreen()
             : const LoginScreen();
       },
     );

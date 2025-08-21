@@ -25,6 +25,8 @@ class User {
     this.sucursalName,
   });
 
+  bool get isSuperAdmin => role == 'super_admin';
+  bool get isAdmin => role == 'admin';
   factory User.fromJson(Map<String, dynamic> json) => _$UserFromJson(json);
   Map<String, dynamic> toJson() => _$UserToJson(this);
 }
